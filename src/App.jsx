@@ -11,8 +11,8 @@ import { parseUnits, formatUnits, maxUint256 } from 'viem';
 /************************************
  * 🧩 Addresses — REPLACE THESE
  ************************************/
-const NAKA_TOKEN_ADDRESS = '0xYourDeployedNakaTokenAddress';
-const STAKING_CONTRACT_ADDRESS = '0xYourDeployedStakingContractAddress';
+const NAKA_TOKEN_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
+const STAKING_CONTRACT_ADDRESS = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512';
 const TOKEN_DECIMALS = 18; // change if your token uses different decimals
 
 /************************************
@@ -50,6 +50,7 @@ const erc20Abi = [
 
 /************************************
  * 🏗️ AdvancedNakaStaking ABI (subset needed for UI)
+ *  — Per-pool rewards + claim
  ************************************/
 const stakingAbi = [
   // stake(uint256 _amount, uint256 _lockDuration)
@@ -79,18 +80,45 @@ const stakingAbi = [
     stateMutability: 'nonpayable',
     type: 'function'
   },
-  // claimRewards()
+  // claimRewards(uint256 _lockDuration)  — per pool
   {
-    inputs: [],
+    inputs: [{ internalType: 'uint256', name: '_lockDuration', type: 'uint256' }],
     name: 'claimRewards',
     outputs: [],
     stateMutability: 'nonpayable',
     type: 'function'
   },
-  // getRewards(address _user) view returns (uint256)
+  // claimAllRewards()
   {
-    inputs: [{ internalType: 'address', name: '_user', type: 'address' }],
-    name: 'getRewards',
+    inputs: [],
+    name: 'claimAllRewards',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function'
+  },
+  // getPoolRewards(address _user, uint256 _lockDuration) view returns (uint256)
+  {
+    inputs: [
+      { internalType: 'address', name: '_user', type: 'address' },
+      { internalType: 'uint256', name: '_lockDuration', type: 'uint256' }
+    ],
+    name: 'pendingRewards',
+    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  // availableRewards() view returns (uint256) — admin-funded pool balance for rewards
+  {
+    inputs: [],
+    name: 'rewardReserve',
+    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  // totalStaked() view returns (uint256)
+  {
+    inputs: [],
+    name: 'totalStakedAll',
     outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
     stateMutability: 'view',
     type: 'function'
@@ -101,11 +129,20 @@ const stakingAbi = [
       { internalType: 'address', name: '', type: 'address' },
       { internalType: 'uint256', name: '', type: 'uint256' }
     ],
-    name: 'stakedTokens',
+    name: 'stakes',
     outputs: [
       { internalType: 'uint256', name: 'amount', type: 'uint256' },
-      { internalType: 'uint256', name: 'timestamp', type: 'uint256' }
+      { internalType: 'uint64', name: 'startTime', type: 'uint64' },
+      { internalType: 'uint64', name: 'lastClaim', type: 'uint64' }
     ],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  // getSupportedLockDurations()
+  {
+    inputs: [],
+    name: 'getSupportedLockDurations',
+    outputs: [{ internalType: 'uint256[]', name: '', type: 'uint256[]' }],
     stateMutability: 'view',
     type: 'function'
   }
@@ -114,7 +151,7 @@ const stakingAbi = [
 /************************************
  * 🔌 WalletConnect / wagmi setup
  ************************************/
-const projectId = 'af36f00224213d5089309605330a103c'; // demo only — use your own in production
+const projectId = '1e376e78c0aa32bd807ec395c7f7217e'; // demo only — use your own in production
 const metadata = {
   name: 'NAKA the CAT Staking',
   description: 'Stake NAKA, purr more rewards',
@@ -125,6 +162,7 @@ const chains = [mainnet, sepolia, base];
 const wagmiConfig = defaultWagmiConfig({ chains, projectId, metadata, enableInjected: true, enableEagerConnect: true });
 createWeb3Modal({ wagmiConfig, projectId, chains });
 const queryClient = new QueryClient();
+
 
 // SVG bg pattern
 const backgroundPattern = `
@@ -157,7 +195,7 @@ const AppContent = () => {
   const [modalType, setModalType] = useState('success');
   const [lastTxHash, setLastTxHash] = useState(null);
 
-  // Staking pools must match contract constructor
+  // Staking pools must match contract configuration
   const stakingPools = [
     { id: '7-day', duration: '7 Days', apy: 100, lockDurationInSeconds: 7 * 24 * 60 * 60 },
     { id: '14-day', duration: '14 Days', apy: 150, lockDurationInSeconds: 14 * 24 * 60 * 60 },
@@ -183,37 +221,57 @@ const AppContent = () => {
     query: { enabled: isConnected && !!address }
   });
 
+  // Contract-wide available rewards (admin-funded)
+  const { data: availableRewardsData, refetch: refetchAvailableRewards } = useReadContract({
+    ...stakingContract,
+    functionName: 'rewardReserve',
+    query: { enabled: isConnected }
+  });
+
+  // Total staked across all pools
+  const { data: totalStakedData, refetch: refetchTotalStaked } = useReadContract({
+    ...stakingContract,
+    functionName: 'totalStakedAll',
+    query: { enabled: isConnected }
+  });
+
   // staked amounts per pool
   const { data: staked7, refetch: refetchStaked7 } = useReadContract({
-    address: STAKING_CONTRACT_ADDRESS,
-    abi: stakingAbi,
-    functionName: 'stakedTokens',
+    ...stakingContract,
+    functionName: 'stakes',
     args: [address, BigInt(stakingPools[0].lockDurationInSeconds)],
     query: { enabled: isConnected && !!address }
   });
-
   const { data: staked14, refetch: refetchStaked14 } = useReadContract({
-    address: STAKING_CONTRACT_ADDRESS,
-    abi: stakingAbi,
-    functionName: 'stakedTokens',
+    ...stakingContract,
+    functionName: 'stakes',
     args: [address, BigInt(stakingPools[1].lockDurationInSeconds)],
     query: { enabled: isConnected && !!address }
   });
-
   const { data: staked21, refetch: refetchStaked21 } = useReadContract({
-    address: STAKING_CONTRACT_ADDRESS,
-    abi: stakingAbi,
-    functionName: 'stakedTokens',
+    ...stakingContract,
+    functionName: 'stakes',
     args: [address, BigInt(stakingPools[2].lockDurationInSeconds)],
     query: { enabled: isConnected && !!address }
   });
 
-  // rewards (across all pools)
-  const { data: rewardsData, refetch: refetchRewards } = useReadContract({
-    address: STAKING_CONTRACT_ADDRESS,
-    abi: stakingAbi,
-    functionName: 'getRewards',
-    args: [address],
+  // rewards per pool
+  const { data: rewards7, refetch: refetchRewards7 } = useReadContract({
+    ...stakingContract,
+    functionName: 'pendingRewards',
+    args: [address, BigInt(stakingPools[0].lockDurationInSeconds)],
+    query: { enabled: isConnected && !!address }
+  });
+  const { data: rewards14, refetch: refetchRewards14 } = useReadContract({
+    ...stakingContract,
+    functionName: 'pendingRewards',
+    args: [address, BigInt(stakingPools[1].lockDurationInSeconds)],
+    query: { enabled: isConnected && !!address }
+  });
+  const { data: rewards21, refetch: refetchRewards21 } = useReadContract({
+    ...stakingContract,
+    functionName: 'pendingRewards',
+    args: [address, BigInt(stakingPools[2].lockDurationInSeconds)],
     query: { enabled: isConnected && !!address }
   });
 
@@ -246,24 +304,26 @@ const AppContent = () => {
   }, [isTxSuccess, isTxError]);
 
   const refetchAllData = () => {
-    refetchBalance();
-    refetchAllowance();
-    refetchStaked7();
-    refetchStaked14();
-    refetchStaked21();
-    refetchRewards();
+    refetchBalance?.();
+    refetchAllowance?.();
+    refetchAvailableRewards?.();
+    refetchTotalStaked?.();
+    refetchStaked7?.();
+    refetchStaked14?.();
+    refetchStaked21?.();
+    refetchRewards7?.();
+    refetchRewards14?.();
+    refetchRewards21?.();
   };
 
   /***************************
    * 🧮 Formatting helpers
    ***************************/
+  const toNum = (v) => (v === undefined || v === null ? 0 : Number(v));
   const formatAmount = (value, decimals = TOKEN_DECIMALS) => {
     if (value === undefined || value === null) return 0;
     try {
-      if (Array.isArray(value)) {
-        // for stakedTokens tuple [amount, timestamp]
-        value = value[0];
-      }
+      if (Array.isArray(value)) value = value[0]; // tuple {amount, startTime, lastClaim}
       return parseFloat(formatUnits(value, decimals));
     } catch {
       return 0;
@@ -274,8 +334,13 @@ const AppContent = () => {
   const formattedStaked7 = formatAmount(staked7);
   const formattedStaked14 = formatAmount(staked14);
   const formattedStaked21 = formatAmount(staked21);
-  const formattedRewards = formatAmount(rewardsData);
-  const totalStaked = formattedStaked7 + formattedStaked14 + formattedStaked21;
+  const formattedRewards7 = formatAmount(rewards7);
+  const formattedRewards14 = formatAmount(rewards14);
+  const formattedRewards21 = formatAmount(rewards21);
+  const formattedAvailableRwds = formatAmount(availableRewardsData);
+  const formattedTotalStakedAll = formatAmount(totalStakedData);
+  const totalStakedUser = formattedStaked7 + formattedStaked14 + formattedStaked21;
+  const totalUserRewards = formattedRewards7 + formattedRewards14 + formattedRewards21;
 
   const shortAddress = (addr) => `${addr?.substring(0, 6)}...${addr?.substring(addr.length - 4)}`;
 
@@ -284,7 +349,6 @@ const AppContent = () => {
    ***************************/
   const ensureAllowance = async (requiredAmountWei) => {
     try {
-      // If we don't have allowance data yet, just approve max to be safe
       if (allowanceData === undefined || allowanceData === null) {
         const tx = await writeContract({
           address: NAKA_TOKEN_ADDRESS,
@@ -295,7 +359,6 @@ const AppContent = () => {
         setLastTxHash(tx);
         return;
       }
-
       const current = BigInt(allowanceData);
       if (current < requiredAmountWei) {
         const tx = await writeContract({
@@ -325,14 +388,11 @@ const AppContent = () => {
 
     try {
       const amountWei = parseUnits(amountStr, TOKEN_DECIMALS);
-
       // 1) Ensure allowance
       await ensureAllowance(amountWei);
-
       // 2) Stake
       const tx = await writeContract({
-        address: STAKING_CONTRACT_ADDRESS,
-        abi: stakingAbi,
+        ...stakingContract,
         functionName: 'stake',
         args: [amountWei, BigInt(pool.lockDurationInSeconds)]
       });
@@ -350,8 +410,7 @@ const AppContent = () => {
     if (!pool) return;
     try {
       const tx = await writeContract({
-        address: STAKING_CONTRACT_ADDRESS,
-        abi: stakingAbi,
+        ...stakingContract,
         functionName: 'unstake',
         args: [BigInt(pool.lockDurationInSeconds)]
       });
@@ -368,8 +427,7 @@ const AppContent = () => {
     if (!pool) return;
     try {
       const tx = await writeContract({
-        address: STAKING_CONTRACT_ADDRESS,
-        abi: stakingAbi,
+        ...stakingContract,
         functionName: 'emergencyUnstake',
         args: [BigInt(pool.lockDurationInSeconds)]
       });
@@ -381,12 +439,14 @@ const AppContent = () => {
     }
   };
 
-  const handleClaimRewards = async () => {
+  const handleClaimRewards = async (poolId) => {
+    const pool = stakingPools.find((p) => p.id === poolId);
+    if (!pool) return;
     try {
       const tx = await writeContract({
-        address: STAKING_CONTRACT_ADDRESS,
-        abi: stakingAbi,
-        functionName: 'claimRewards'
+        ...stakingContract,
+        functionName: 'claimRewards',
+        args: [BigInt(pool.lockDurationInSeconds)]
       });
       setLastTxHash(tx);
       showCustomModal('Claim transaction submitted. Waiting for confirmation...', 'success');
@@ -396,11 +456,25 @@ const AppContent = () => {
     }
   };
 
+  const handleClaimAllRewards = async () => {
+    try {
+      const tx = await writeContract({
+        ...stakingContract,
+        functionName: 'claimAllRewards',
+        args: []
+      });
+      setLastTxHash(tx);
+      showCustomModal('Claim all rewards transaction submitted. Waiting for confirmation...', 'success');
+    } catch (error) {
+      console.error('Claim all rewards transaction failed:', error);
+      showCustomModal(`Oh no! Claiming all rewards failed: ${error?.shortMessage || error?.message || 'Unknown error'}`, 'error');
+    }
+  };
+
   // Cute quote fetch (optional)
   const fetchQuote = async () => {
     setIsLoadingQuote(true);
     try {
-      // Placeholder — keep as-is to avoid exposing a key; shows fallback text on error
       const text = 'A purr-fectly great project starts with a single step.';
       setApiQuote(text);
     } finally {
@@ -524,7 +598,6 @@ const AppContent = () => {
         <header className="header">
           <div className="logo-section">
             <img src={logoUrl} alt="NAKA the CAT Logo" className="logo-image animate-pulse" />
-            {/* <img src={nameLogoUrl} alt="NAKA Text Logo" className="text-logo-image" /> */}
           </div>
 
           {isConnected ? (
@@ -560,103 +633,147 @@ const AppContent = () => {
                   <p style={{ fontSize: '0.75rem', fontFamily: 'Inter, sans-serif', color: '#4b5563', marginTop: '0.25rem' }}>NAKA Tokens</p>
                 </div>
                 <div className="stat-card">
-                  <p className="label">Total Staked</p>
-                  <p className="value">{totalStaked.toFixed(2)}</p>
+                  <p className="label">Your Total Staked</p>
+                  <p className="value">{totalStakedUser.toFixed(2)}</p>
                   <p style={{ fontSize: '0.75rem', fontFamily: 'Inter, sans-serif', color: '#4b5563', marginTop: '0.25rem' }}>NAKA Tokens</p>
                 </div>
                 <div className="stat-card">
-                  <p className="label">Total Claimable Rewards</p>
-                  <p className="value" style={{ color: 'var(--success-color)' }}>{formattedRewards.toFixed(2)}</p>
-                  <p style={{ fontSize: '0.75rem', fontFamily: 'Inter, sans-serif', color: '#4b5563', marginTop: '0.25rem' }}>NAKA Tokens</p>
+                  <p className="label">Your Total Claimable</p>
+                  <p className="value" style={{ color: 'var(--success-color)' }}>{totalUserRewards.toFixed(2)}</p>
+                  <p style={{ fontSize: '0.75rem', fontFamily: 'Inter, sans-serif', color: '#4b5563', marginTop: '0.25rem' }}>NAKA Tokens (sum of pools)</p>
+                </div>
+              </div>
+
+              {/* Contract-level info row */}
+              <div className="stats-grid" style={{ marginTop: '1rem' }}>
+                <div className="stat-card">
+                  <p className="label">Reward Pool (Admin-Funded)</p>
+                  <p className="value" title="rewardReserve()">
+                    {formattedAvailableRwds.toFixed(2)}
+                  </p>
+                  <p style={{ fontSize: '0.75rem', fontFamily: 'Inter, sans-serif', color: '#4b5563', marginTop: '0.25rem' }}>
+                    NAKA Available for Rewards
+                  </p>
+                </div>
+                <div className="stat-card">
+                  <p className="label">Total Staked (All Users)</p>
+                  <p className="value">{formattedTotalStakedAll.toFixed(2)}</p>
+                  <p style={{ fontSize: '0.75rem', fontFamily: 'Inter, sans-serif', color: '#4b5563', marginTop: '0.25rem' }}>NAKA in contract</p>
+                </div>
+                <div className="stat-card">
+                  <p className="label">Wallet</p>
+                  <p className="value" style={{ display: 'flex', gap: '.5rem', alignItems: 'center', justifyContent: 'center' }}>
+                    {shortAddress(address)}
+                  </p>
+                  <p style={{ fontSize: '0.75rem', fontFamily: 'Inter, sans-serif', color: '#4b5563', marginTop: '0.25rem' }}>Connected</p>
                 </div>
               </div>
             </div>
 
             {/* Pools */}
             <div className="staking-pools" style={{ marginTop: '1.5rem' }}>
-              {stakingPools.map((pool) => (
-                <div key={pool.id} className="pool-card">
-                  <h2><Gift style={{ marginRight: '0.5rem' }} /> {pool.duration} Pool</h2>
-                  <p className="apy">{pool.apy}% APY</p>
+              {stakingPools.map((pool) => {
+                const stakedAmt = pool.id === '7-day' ? formattedStaked7 : pool.id === '14-day' ? formattedStaked14 : formattedStaked21;
+                const rewardsAmt = pool.id === '7-day' ? formattedRewards7 : pool.id === '14-day' ? formattedRewards14 : formattedRewards21;
+                return (
+                  <div key={pool.id} className="pool-card">
+                    <h2><Gift style={{ marginRight: '0.5rem' }} /> {pool.duration} Pool</h2>
+                    <p className="apy">{pool.apy}% APY</p>
 
-                  <div className="input-group" style={{ marginBottom: '1rem' }}>
-                    <p>Your staked amount:</p>
-                    <p style={{ fontSize: '1.25rem', fontWeight: 'bold', fontFamily: 'Bebas Neue, sans-serif' }}>
-                      {pool.id === '7-day' ? formattedStaked7.toFixed(2) : pool.id === '14-day' ? formattedStaked14.toFixed(2) : formattedStaked21.toFixed(2)} NAKA
-                    </p>
-                  </div>
+                    <div className="input-group" style={{ marginBottom: '1rem' }}>
+                      <p>Your staked amount:</p>
+                      <p style={{ fontSize: '1.25rem', fontWeight: 'bold', fontFamily: 'Bebas Neue, sans-serif' }}>
+                        {stakedAmt.toFixed(2)} NAKA
+                      </p>
+                    </div>
 
-                  <div className="input-group" style={{ marginBottom: '1rem' }}>
-                    <p>Stake NAKA</p>
-                    <div className="input-flex">
-                      <input
-                        type="number"
-                        value={stakeInputs[pool.id]}
-                        onChange={(e) => setStakeInputs((prev) => ({ ...prev, [pool.id]: e.target.value }))}
-                        placeholder="0.0"
-                        className="input-field"
-                      />
-                      <button onClick={() => handleStake(pool.id)} disabled={isTxPending || !stakeInputs[pool.id]} className="stake-button">
-                        {isTxPending ? <Loader className="animate-spin" /> : 'Stake'}
-                      </button>
+                    <div className="input-group" style={{ marginBottom: '1rem' }}>
+                      <p>Stake NAKA</p>
+                      <div className="input-flex">
+                        <input
+                          type="number"
+                          value={stakeInputs[pool.id]}
+                          onChange={(e) => setStakeInputs((prev) => ({ ...prev, [pool.id]: e.target.value }))}
+                          placeholder="0.0"
+                          className="input-field"
+                        />
+                        <button onClick={() => handleStake(pool.id)} disabled={isTxPending || !stakeInputs[pool.id]} className="stake-button">
+                          {isTxPending ? <Loader className="animate-spin" /> : 'Stake'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="input-group" style={{ marginBottom: '1rem' }}>
+                      <p>Claimable Rewards:</p>
+                      <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <p style={{ fontSize: '1.25rem', fontWeight: 'bold', fontFamily: 'Bebas Neue, sans-serif' }}>
+                          {rewardsAmt.toFixed(6)} NAKA
+                        </p>
+                        <button
+                          onClick={() => handleClaimRewards(pool.id)}
+                          disabled={isTxPending || rewardsAmt <= 0}
+                          className="claim-button"
+                          style={{ width: '50%' }}
+                        >
+                          {isTxPending ? (
+                            <Loader className="animate-spin" style={{ width: '1.25rem', height: '1.25rem', marginRight: '0.5rem' }} />
+                          ) : (
+                            <Handshake style={{ width: '1.25rem', height: '1.25rem', marginRight: '0.5rem' }} />
+                          )}
+                          {isTxPending ? 'Claiming...' : 'Claim'}
+                        </button>
+                      </div>
+                      <p style={{ fontSize: '.8rem', color: '#4b5563', marginTop: '.25rem' }}>
+                        Rewards are paid from the admin-funded pool. If it's empty, claims will revert but your stake remains safe.
+                      </p>
+                    </div>
+
+                    <div className="input-group" style={{ marginBottom: '0.5rem' }}>
+                      <p>Unstake All NAKA</p>
+                      <div className="input-flex">
+                        <button
+                          onClick={() => handleUnstake(pool.id)}
+                          disabled={isTxPending || stakedAmt <= 0}
+                          className="unstake-button"
+                          style={{ width: '100%' }}
+                        >
+                          {isTxPending ? <Loader className="animate-spin" /> : 'Unstake'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="input-group">
+                      <p>Emergency Unstake (2% Penalty)</p>
+                      <div className="input-flex">
+                        <button
+                          onClick={() => handleEmergencyUnstake(pool.id)}
+                          disabled={isTxPending || stakedAmt <= 0}
+                          className="unstake-button"
+                          style={{ width: '100%' }}
+                        >
+                          {isTxPending ? <Loader className="animate-spin" /> : 'Emergency Unstake'}
+                        </button>
+                      </div>
                     </div>
                   </div>
-
-                  <div className="input-group" style={{ marginBottom: '0.5rem' }}>
-                    <p>Unstake All NAKA</p>
-                    <div className="input-flex">
-                      <button
-                        onClick={() => handleUnstake(pool.id)}
-                        disabled={
-                          isTxPending ||
-                          (pool.id === '7-day' && formattedStaked7 <= 0) ||
-                          (pool.id === '14-day' && formattedStaked14 <= 0) ||
-                          (pool.id === '21-day' && formattedStaked21 <= 0)
-                        }
-                        className="unstake-button"
-                        style={{ width: '100%' }}
-                      >
-                        {isTxPending ? <Loader className="animate-spin" /> : 'Unstake'}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="input-group">
-                    <p>Emergency Unstake (2% Penalty)</p>
-                    <div className="input-flex">
-                      <button
-                        onClick={() => handleEmergencyUnstake(pool.id)}
-                        disabled={
-                          isTxPending ||
-                          (pool.id === '7-day' && formattedStaked7 <= 0) ||
-                          (pool.id === '14-day' && formattedStaked14 <= 0) ||
-                          (pool.id === '21-day' && formattedStaked21 <= 0)
-                        }
-                        className="unstake-button"
-                        style={{ width: '100%' }}
-                      >
-                        {isTxPending ? <Loader className="animate-spin" /> : 'Emergency Unstake'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
-            {/* Claim Rewards */}
+            {/* Claim All Rewards Section */}
             <div className="claim-section">
-              <h2><PiggyBank style={{ marginRight: '0.5rem' }} /> Claim Rewards</h2>
+              <h2><PiggyBank style={{ marginRight: '0.5rem' }} /> Claim All Rewards</h2>
               <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
-                <p style={{ fontSize: '1.5rem', fontWeight: 'bold', fontFamily: 'Bebas Neue, sans-serif' }}>{formattedRewards.toFixed(2)} NAKA</p>
-                <p style={{ fontSize: '0.875rem', fontFamily: 'Inter, sans-serif', color: '#6b7280' }}>claimable rewards</p>
+                <p style={{ fontSize: '1.5rem', fontWeight: 'bold', fontFamily: 'Bebas Neue, sans-serif' }}>{totalUserRewards.toFixed(6)} NAKA</p>
+                <p style={{ fontSize: '0.875rem', fontFamily: 'Inter, sans-serif', color: '#6b7280' }}>sum across all pools</p>
               </div>
-              <button onClick={handleClaimRewards} disabled={isTxPending || formattedRewards <= 0} className="claim-button">
-                {isTxPending ? (
-                  <Loader className="animate-spin" style={{ width: '1.25rem', height: '1.25rem', marginRight: '0.5rem' }} />
-                ) : (
-                  <Handshake style={{ width: '1.25rem', height: '1.25rem', marginRight: '0.5rem' }} />
-                )}
-                {isTxPending ? 'Claiming...' : 'Claim All Rewards'}
+              <button
+                onClick={handleClaimAllRewards}
+                disabled={isTxPending || totalUserRewards <= 0}
+                className="claim-button"
+              >
+                <Handshake style={{ width: '1.25rem', height: '1.25rem', marginRight: '0.5rem' }} />
+                {isTxPending ? 'Claiming All...' : 'Claim All Rewards'}
               </button>
             </div>
           </main>
