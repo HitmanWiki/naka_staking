@@ -2,17 +2,18 @@ import React, { useState, useEffect } from 'react';
 // wagmi v2
 import { createWeb3Modal, defaultWagmiConfig } from '@web3modal/wagmi/react';
 import { WagmiConfig, useAccount, useDisconnect, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { mainnet, sepolia, base } from 'wagmi/chains';
+import { mainnet, sepolia, base, baseSepolia } from 'wagmi/chains';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Wallet, PiggyBank, Handshake, Loader, XCircle, Cat, Gift, LogOut } from 'lucide-react';
 import { useWeb3Modal } from '@web3modal/wagmi/react';
 import { parseUnits, formatUnits, maxUint256 } from 'viem';
 
+
 /************************************
  * 🧩 Addresses — REPLACE THESE
  ************************************/
-const NAKA_TOKEN_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
-const STAKING_CONTRACT_ADDRESS = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512';
+const NAKA_TOKEN_ADDRESS = '0x2A29dA1c87928FeCf31703dE59C1408f5082de2a';
+const STAKING_CONTRACT_ADDRESS = '0xC47502A9EC9B20C44342af1b4F8E54a7f0c50AdB';
 const TOKEN_DECIMALS = 18; // change if your token uses different decimals
 
 /************************************
@@ -158,7 +159,7 @@ const metadata = {
   url: 'https://nakathestakingcat.com',
   icons: ['https://avatars.githubusercontent.com/u/37784886']
 };
-const chains = [mainnet, sepolia, base];
+const chains = [mainnet, sepolia, base, baseSepolia];
 const wagmiConfig = defaultWagmiConfig({ chains, projectId, metadata, enableInjected: true, enableEagerConnect: true });
 createWeb3Modal({ wagmiConfig, projectId, chains });
 const queryClient = new QueryClient();
@@ -663,7 +664,7 @@ const AppContent = () => {
                 <div className="stat-card">
                   <p className="label">Wallet</p>
                   <p className="value" style={{ display: 'flex', gap: '.5rem', alignItems: 'center', justifyContent: 'center' }}>
-                    {shortAddress(address)}
+                    <Wallet /> {shortAddress(address)}
                   </p>
                   <p style={{ fontSize: '0.75rem', fontFamily: 'Inter, sans-serif', color: '#4b5563', marginTop: '0.25rem' }}>Connected</p>
                 </div>

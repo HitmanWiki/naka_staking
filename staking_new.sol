@@ -155,6 +155,10 @@ contract AdvancedNakaStaking is Ownable, ReentrancyGuard {
      * @notice Stake tokens into a pool (by lock duration).
      * @dev Staking is allowed even if reward reserve is empty.
      */
+    /**
+     * @notice Stake tokens into a pool (by lock duration).
+     * @dev Staking is allowed even if reward reserve is empty.
+     */
     function stake(
         uint256 _amount,
         uint256 _lockDuration
@@ -167,8 +171,9 @@ contract AdvancedNakaStaking is Ownable, ReentrancyGuard {
 
         // If already staked in this pool, auto-claim pending (capped by reserve) before adding
         if (s.amount > 0) {
-            uint256 claimed = _claimInternal(msg.sender, _lockDuration);
-            // emit included in _claimInternal if > 0
+            // Remove the unused variable and just call the function
+            _claimInternal(msg.sender, _lockDuration);
+
             p.totalStaked += _amount;
             s.amount += _amount;
             // restart accrual from now
