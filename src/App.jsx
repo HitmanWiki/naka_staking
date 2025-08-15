@@ -1,18 +1,17 @@
 import React, { useState, useEffect } from 'react';
 // wagmi v2
 import { createWeb3Modal, defaultWagmiConfig } from '@web3modal/wagmi/react';
-import { WagmiConfig, useAccount, useDisconnect, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { WagmiConfig, useAccount, useDisconnect, useReadContract, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
 import { mainnet, sepolia, base, baseSepolia } from 'wagmi/chains';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Wallet, PiggyBank, Handshake, Loader, XCircle, Cat, Gift, LogOut } from 'lucide-react';
+import { Wallet, PiggyBank, Handshake, Loader, XCircle, Cat, Gift, LogOut, RefreshCw } from 'lucide-react';
 import { useWeb3Modal } from '@web3modal/wagmi/react';
 import { parseUnits, formatUnits, maxUint256 } from 'viem';
-
 
 /************************************
  * 🧩 Addresses — REPLACE THESE
  ************************************/
-const NAKA_TOKEN_ADDRESS = '0x2A29dA1c87928FeCf31703dE59C1408f5082de2a';
+const NAKA_TOKEN_ADDRESS = '0xAC2C0505b953d8679230b564c1bf1836673e311A';
 const STAKING_CONTRACT_ADDRESS = '0xC47502A9EC9B20C44342af1b4F8E54a7f0c50AdB';
 const TOKEN_DECIMALS = 18; // change if your token uses different decimals
 
@@ -164,7 +163,6 @@ const wagmiConfig = defaultWagmiConfig({ chains, projectId, metadata, enableInje
 createWeb3Modal({ wagmiConfig, projectId, chains });
 const queryClient = new QueryClient();
 
-
 // SVG bg pattern
 const backgroundPattern = `
   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -186,6 +184,7 @@ const AppContent = () => {
   const { open } = useWeb3Modal();
   const { disconnect } = useDisconnect();
   const { writeContract } = useWriteContract();
+  const publicClient = usePublicClient();
 
   // UI state
   const [stakeInputs, setStakeInputs] = useState({ '7-day': '', '14-day': '', '21-day': '' });
@@ -195,6 +194,8 @@ const AppContent = () => {
   const [modalMessage, setModalMessage] = useState('');
   const [modalType, setModalType] = useState('success');
   const [lastTxHash, setLastTxHash] = useState(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
   // Staking pools must match contract configuration
   const stakingPools = [
@@ -285,6 +286,29 @@ const AppContent = () => {
     setShowModal(true);
   };
 
+  const refetchAllData = async () => {
+    setIsRefreshing(true);
+    try {
+      await Promise.allSettled([
+        refetchBalance?.(),
+        refetchAllowance?.(),
+        refetchAvailableRewards?.(),
+        refetchTotalStaked?.(),
+        refetchStaked7?.(),
+        refetchStaked14?.(),
+        refetchStaked21?.(),
+        refetchRewards7?.(),
+        refetchRewards14?.(),
+        refetchRewards21?.(),
+      ]);
+      setLastUpdated(new Date());
+    } catch (error) {
+      console.error("Error refreshing data:", error);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   useEffect(() => {
     if (isConnected) {
       showCustomModal('Wallet connected successfully!', 'success');
@@ -296,7 +320,8 @@ const AppContent = () => {
   useEffect(() => {
     if (isTxSuccess) {
       showCustomModal('Transaction confirmed ✅', 'success');
-      refetchAllData();
+      // Refresh all data after a short delay to allow blockchain state to update
+      setTimeout(refetchAllData, 2000);
     }
     if (isTxError) {
       showCustomModal('Oh no! Your transaction failed.', 'error');
@@ -304,18 +329,15 @@ const AppContent = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTxSuccess, isTxError]);
 
-  const refetchAllData = () => {
-    refetchBalance?.();
-    refetchAllowance?.();
-    refetchAvailableRewards?.();
-    refetchTotalStaked?.();
-    refetchStaked7?.();
-    refetchStaked14?.();
-    refetchStaked21?.();
-    refetchRewards7?.();
-    refetchRewards14?.();
-    refetchRewards21?.();
-  };
+  useEffect(() => {
+    const unsubscribe = wagmiConfig.subscribe((state) => state.status, (status) => {
+      if (status === 'connected') {
+        refetchAllData();
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   /***************************
    * 🧮 Formatting helpers
@@ -472,6 +494,11 @@ const AppContent = () => {
     }
   };
 
+  const handleManualRefresh = async () => {
+    await refetchAllData();
+    showCustomModal('Data refreshed successfully!', 'success');
+  };
+
   // Cute quote fetch (optional)
   const fetchQuote = async () => {
     setIsLoadingQuote(true);
@@ -589,9 +616,17 @@ const AppContent = () => {
         .footer { margin-top: 2rem; padding-top: 1.5rem; text-align: center; color: #6b7280; border-top: 2px solid var(--primary-color); }
         .quote-text { font-size: .875rem; font-style: italic; }
 
+        .refresh-button { position: fixed; bottom: 2rem; right: 2rem; background-color: var(--primary-color); color: white; width: 3rem; height: 3rem; border-radius: 9999px; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); cursor: pointer; transition: all .2s; z-index: 20; }
+        .refresh-button:hover { transform: rotate(180deg); background-color: #1e3a8a; }
+        .refresh-button:active { transform: rotate(180deg) scale(0.95); }
+        .refresh-button.loading { animation: spin 1s linear infinite; }
+
+        .last-updated { font-size: 0.75rem; color: #6b7280; text-align: right; margin-top: 0.5rem; }
+
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
         @keyframes bounce-slow { 0%,100%{ transform: translateY(-5%) } 50%{ transform: translateY(0) } }
         @keyframes fade-in { 0%{opacity:0} 100%{opacity:1} }
+        @keyframes spin { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }
       `}</style>
 
       <div className="main-wrapper">
@@ -626,7 +661,15 @@ const AppContent = () => {
 
             {/* Balances & Rewards */}
             <div className="stats-section">
-              <h2><Cat style={{ marginRight: '0.5rem' }} /> Your NAKA Staking Stats</h2>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2><Cat style={{ marginRight: '0.5rem' }} /> Your NAKA Staking Stats</h2>
+                {isRefreshing && (
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <Loader className="animate-spin" style={{ marginRight: '0.5rem' }} />
+                    <span>Refreshing...</span>
+                  </div>
+                )}
+              </div>
               <div className="stats-grid">
                 <div className="stat-card">
                   <p className="label">Available Balance</p>
@@ -669,6 +712,11 @@ const AppContent = () => {
                   <p style={{ fontSize: '0.75rem', fontFamily: 'Inter, sans-serif', color: '#4b5563', marginTop: '0.25rem' }}>Connected</p>
                 </div>
               </div>
+              {lastUpdated && (
+                <p className="last-updated">
+                  Last updated: {lastUpdated.toLocaleTimeString()}
+                </p>
+              )}
             </div>
 
             {/* Pools */}
@@ -812,6 +860,17 @@ const AppContent = () => {
             <p className="quote-text">&ldquo;{apiQuote}&rdquo;</p>
           )}
         </footer>
+
+        {/* Refresh Button */}
+        {isConnected && (
+          <button
+            onClick={handleManualRefresh}
+            className={`refresh-button ${isRefreshing ? 'loading' : ''}`}
+            disabled={isRefreshing}
+          >
+            <RefreshCw size={20} />
+          </button>
+        )}
       </div>
     </div>
   );
